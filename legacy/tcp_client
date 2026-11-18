@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import math
+import socket
+from statistics import mean
+import struct
+import sys
+import time
+
+
+PAYLOAD = b"Hello from client!"
+MODES = ("normal", "abrupt", "half-open", "timeout", "linger", "fin-wait", "immediate-reset", "multiple")
+
+
+def drain(sock):
+    while sock.recv(4096):
+        pass
+
+
+def single(args):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(args.timeout)
+        print(f"[Client] Connecting to {args.server}:{args.port}...")
+        sock.connect((args.server, args.port))
+        print("[Client] Connected to server.")
+
+        if args.mode == "immediate-reset":
+            try:
+                sock.recv(1)
+            except ConnectionResetError:
+                print("[Client] Received RST from server.")
+                return
+            raise OSError("expected RST, received data or a graceful close instead")
+
+        if args.mode in ("abrupt", "linger"):
+            linger = 0 if args.mode == "abrupt" else 5
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, linger))
+            sock.sendall(PAYLOAD)
+            print(f"[Client] Closing with SO_LINGER={linger}.")
+            return
+
+        sock.sendall(PAYLOAD)
+        if args.mode == "timeout":
+            try:
+                data = sock.recv(4096)
+            except TimeoutError:
+                print("[Client] Read timed out.")
+            else:
+                print("[Client] Received a reply." if data else "[Client] Server closed connection.")
+            return
+
+        sock.shutdown(socket.SHUT_WR)
+        print("[Client] Sent FIN; waiting for peer EOF.")
+        if args.mode in ("half-open", "fin-wait") and args.duration:
+            time.sleep(args.duration / 1000)
+        drain(sock)
+        print("[Client] Received peer EOF.")
+
+
+def multiple(args):
+    # Resolve once and limit workers independently of the requested socket count.
+    target = socket.getaddrinfo(args.server, args.port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
+    sockets = []
+    times = []
+    started = time.monotonic()
+
+    def connect(index):
+        sock = None
+        start = time.monotonic()
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(args.timeout)
+            sock.connect(target)
+            return sock, (time.monotonic() - start) * 1000, None
+        except OSError as error:
+            if sock is not None:
+                sock.close()
+            return None, None, error
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(args.num_connections, 64)) as pool:
+            for i, (sock, elapsed, error) in enumerate(pool.map(connect, range(args.num_connections)), 1):
+                if error is not None:
+                    print(f"[Client] Connection {i} failed: {error}", file=sys.stderr)
+                else:
+                    sockets.append(sock)
+                    times.append(elapsed)
+                    print(f"[Client] Connection {i}/{args.num_connections}: source port {sock.getsockname()[1]} in {elapsed:.2f}ms")
+
+        failures = args.num_connections - len(sockets)
+        print(f"[Client] Successful connections: {len(sockets)}; failed: {failures}; elapsed: {time.monotonic() - started:.2f}s")
+        if not sockets:
+            return 1
+        print(f"[Client] Connection times: min {min(times):.2f}ms, mean {mean(times):.2f}ms, max {max(times):.2f}ms")
+        if args.duration:
+            time.sleep(args.duration / 1000)
+        else:
+            print("[Client] Keeping connections open until interrupted.")
+            while True:
+                time.sleep(1)
+        return int(bool(failures))
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="TCP client for testing NAT behavior")
+    parser.add_argument("mode", nargs="?", choices=MODES, default="normal")
+    parser.add_argument("-s", "--server", default="127.0.0.1", help="IPv4 address or hostname (default: %(default)s)")
+    parser.add_argument("-p", "--port", type=int, default=12345, help="Server TCP port (default: %(default)s)")
+    parser.add_argument("-n", "--num-connections", type=int, default=1, help="Number of connections in multiple mode (default: %(default)s)")
+    parser.add_argument("-d", "--duration", type=float, default=0, help="Hold time in milliseconds for multiple, half-open and fin-wait; 0 holds indefinitely only in multiple mode")
+    parser.add_argument("-t", "--timeout", type=float, default=5.0, help="Socket operation timeout in seconds (default: %(default)s)")
+    args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        parser.error("port must be between 1 and 65535")
+    if args.num_connections < 1:
+        parser.error("num-connections must be positive")
+    if not math.isfinite(args.duration) or args.duration < 0:
+        parser.error("duration must be finite and non-negative")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("timeout must be finite and positive")
+
+    try:
+        if args.mode == "multiple":
+            return multiple(args)
+        single(args)
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, OverflowError) as error:
+        print(f"[Client] {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

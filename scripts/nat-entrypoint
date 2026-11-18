@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# Keep the image ENTRYPOINT as this script while reaping and signaling workers.
+if (( $$ == 1 )); then
+    exec tini -g -- "$0" "$@"
+fi
+
+log() { printf 'nat-entrypoint: %s\n' "$*" >&2; }
+
+valid_interface() {
+    [[ $1 =~ ^eth([1-9][0-9]{0,7})$ ]] || return 1
+    local table=$(( BASH_REMATCH[1] + 10 ))
+    # 253-255 are the kernel's default, main and local tables.
+    (( table < 253 || table > 255 ))
+}
+
+wait_seconds=${VRF_WAIT_SECONDS:-10}
+if ! [[ $wait_seconds =~ ^(0|[1-9][0-9]{0,5})$ ]]; then
+    log 'VRF_WAIT_SECONDS must be a non-negative integer (seconds)'
+    exit 2
+fi
+
+explicit=0
+requested=()
+if [[ -v VRF_INTERFACES ]]; then
+    explicit=1
+    IFS=' ' read -r -a requested <<< "$VRF_INTERFACES"
+    for iface in "${requested[@]}"; do
+        if ! valid_interface "$iface"; then
+            log "invalid VRF interface: $iface"
+            exit 2
+        fi
+    done
+fi
+
+declare -A configured=() failed=()
+
+configure_vrf() {
+    local iface=$1 master="vrf_$1" table=$(( ${1#eth} + 10 )) details
+    if details=$(ip -d -o link show dev "$master" 2>/dev/null); then
+        if [[ $details != *" vrf table $table "* ]]; then
+            log "$master already exists but is not a VRF for table $table"
+            return 1
+        fi
+    else
+        ip link add "$master" type vrf table "$table" || return 1
+    fi
+
+    ip link set dev "$master" up || return 1
+    # Stop empty VRF tables falling through to the main table (including eth0).
+    ip -4 route replace unreachable default table "$table" metric 4278198272 || return 1
+    if [[ -e /proc/sys/net/ipv6/conf/all/disable_ipv6 ]]; then
+        ip -6 route replace unreachable default table "$table" metric 4278198272 || return 1
+    fi
+    ip link set dev "$iface" up || return 1
+    # Attach last: post-deploy static config waits for this membership.
+    [[ $2 == *" master $master "* ]] || ip link set dev "$iface" master "$master"
+}
+
+consider_interface() {
+    local iface=$1 link master="vrf_$1"
+    [[ ! ${configured[$iface]:-} && ! ${failed[$iface]:-} ]] || return 0
+    link=$(ip -o link show dev "$iface" 2>/dev/null) || return 0
+
+    if [[ $link != *" master $master "* ]]; then
+        if [[ $link == *' master '* ]]; then
+            if (( explicit )); then
+                log "$iface already has a different master; leaving it untouched"
+                failed[$iface]=1
+            fi
+            return 0
+        fi
+        if (( ! explicit )) && {
+            [[ -n $(ip -o addr show dev "$iface" scope global) ]] ||
+            [[ -n $(ip -4 route show table main dev "$iface") ]] ||
+            [[ -n $(ip -6 route show table main dev "$iface" default) ]];
+        }; then
+            return 0
+        fi
+    fi
+
+    if ! configure_vrf "$iface" "$link"; then
+        log "could not configure $master"
+        failed[$iface]=1
+        return 0
+    fi
+    configured[$iface]=1
+    if [[ ${VRF_DHCP:-1} != 0 ]]; then
+        busybox udhcpc -f -i "$iface" -s /usr/local/libexec/vrf-udhcpc &
+    fi
+}
+
+# Containerlab injects links after starting the container. CLAB_INTFS, when
+# present, lets discovery finish early; without a count, scan the full window.
+deadline=$(( SECONDS + wait_seconds ))
+while :; do
+    if (( explicit )); then
+        pending=0
+        for iface in "${requested[@]}"; do
+            consider_interface "$iface"
+            [[ ${configured[$iface]:-} || ${failed[$iface]:-} ]] || pending=1
+        done
+        (( pending )) || break
+    else
+        while IFS= read -r line; do
+            if [[ $line =~ ^[0-9]+:\ (eth[0-9]+)[@:] ]]; then
+                iface=${BASH_REMATCH[1]}
+                valid_interface "$iface" && consider_interface "$iface"
+            fi
+        done < <(ip -o link show)
+        if [[ ${CLAB_INTFS:-} =~ ^(0|[1-9][0-9]{0,5})$ ]] &&
+            (( ${#configured[@]} >= CLAB_INTFS )); then
+            break
+        fi
+    fi
+    (( SECONDS < deadline )) || break
+    sleep 0.2
+done
+
+for iface in "${requested[@]}"; do
+    if [[ ! ${configured[$iface]:-} && ! ${failed[$iface]:-} ]]; then
+        log "$iface did not appear within ${wait_seconds}s; skipping it"
+    fi
+done
+
+if [[ ${TYPE:-client} == server && ${NAT_SERVICES:-1} != 0 && ${configured[eth1]:-} ]]; then
+    if ip vrf exec vrf_eth1 true; then
+        for service in echo-server sleep-server tcp_server; do
+            ip vrf exec vrf_eth1 "$service" &
+        done
+    else
+        log 'skipping server services: ip vrf exec failed for vrf_eth1'
+    fi
+fi
+
+if (( $# == 0 )); then
+    set -- sleep infinity
+fi
+exec "$@"

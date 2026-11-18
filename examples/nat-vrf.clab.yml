@@ -1,0 +1,28 @@
+name: nat-vrf
+
+topology:
+  defaults:
+    kind: linux
+    image-pull-policy: Never
+    binds:
+      - ./nat-vrf-static:/etc/nat-vrf-static:ro
+    env:
+      VRF_INTERFACES: "eth1 eth2"
+      VRF_WAIT_SECONDS: "30"
+      VRF_DHCP: "0"
+  nodes:
+    client:
+      image: nat-client:latest
+      env:
+        TYPE: client
+      exec:
+        - /bin/bash /etc/nat-vrf-static 192.0.2.2/24
+    server:
+      image: nat-server:latest
+      env:
+        TYPE: server
+      exec:
+        - /bin/bash /etc/nat-vrf-static 192.0.2.1/24
+  links:
+    - endpoints: ["client:eth1", "server:eth1"]
+    - endpoints: ["client:eth2", "server:eth2"]

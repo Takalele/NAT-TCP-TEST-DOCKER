@@ -1,0 +1,18 @@
+--- a/tcp-keepalive-test.c
++++ b/tcp-keepalive-test.c
+@@ -19 +19 @@
+-#define DEFAULT_IP "130.225.254.111"
++#define DEFAULT_IP "127.0.0.1"
+--- a/tcp-recv-test.c
++++ b/tcp-recv-test.c
+@@ -17 +17 @@
+-#define DEFAULT_IP "130.225.254.111"
++#define DEFAULT_IP "127.0.0.1"
+@@ -57 +57 @@
+-        .sin_port   = htons(31415),
++        .sin_port   = htons(27182),
+--- a/tcp-send-test.c
++++ b/tcp-send-test.c
+@@ -15 +15 @@
+-#define DEFAULT_IP "130.225.254.111"
++#define DEFAULT_IP "127.0.0.1"

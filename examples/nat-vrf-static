@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+
+# Containerlab's exec can run before the entrypoint finishes attaching links.
+# Share one deadline and change addresses only after both VRFs are ready.
+deadline=$(( SECONDS + 35 ))
+for iface in eth1 eth2; do
+    until link=$(ip -o link show dev "$iface" 2>/dev/null) && [[ $link == *" master vrf_$iface "* ]]; do
+        if (( SECONDS >= deadline )); then
+            printf 'Timed out waiting for %s to join vrf_%s\n' "$iface" "$iface" >&2
+            exit 1
+        fi
+        sleep 0.2
+    done
+done
+
+for iface in eth1 eth2; do
+    ip -4 addr replace "$1" dev "$iface"
+done

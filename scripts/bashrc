@@ -1,0 +1,9 @@
+case $- in
+    *i*) ;;
+    *) return ;;
+esac
+
+if _nat_vrf=$(ip vrf identify "$$" 2>/dev/null) && [[ -n $_nat_vrf ]]; then
+    PS1="[$_nat_vrf] \u@\h:\w\$ "
+fi
+unset _nat_vrf
