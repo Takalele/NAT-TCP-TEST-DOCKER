@@ -51,7 +51,7 @@ COPY --from=tcp-build /out/ /usr/local/bin/
 COPY --chmod=755 legacy/sendtest legacy/recvtest legacy/tcp_client legacy/tcp_server /usr/local/bin/
 COPY --chmod=644 legacy/nat-repeat.py /usr/local/bin/
 COPY --chmod=755 scripts/nat-entrypoint scripts/vrf_shell /usr/local/bin/
-COPY --chmod=755 scripts/vrf-udhcpc /usr/local/libexec/
+COPY --chmod=755 scripts/vrf-udhcpc scripts/vrf-udhcpc6 /usr/local/libexec/
 COPY --chmod=644 scripts/bashrc /root/.bashrc
 WORKDIR /root
 ENTRYPOINT ["/usr/local/bin/nat-entrypoint"]

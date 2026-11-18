@@ -1,0 +1,51 @@
+#!/bin/bash
+set -e
+
+case ${1:-} in
+    bound|renew|deconfig) ;;
+    *) exit 0 ;;
+esac
+
+[[ ${interface:-} =~ ^eth([1-9][0-9]{0,7})$ ]] || exit 1
+table=$(( BASH_REMATCH[1] + 10 ))
+(( table < 253 || table > 255 )) || exit 1
+vrf="vrf_$interface"
+# Never change a lease after its link has been removed or left our VRF.
+link=$(ip -o link show dev "$interface" 2>/dev/null) || exit 0
+[[ $link == *" master $vrf "* ]] || exit 0
+master=$(ip -d -o link show dev "$vrf")
+[[ $master == *" vrf table $table "* ]] || exit 1
+
+# Reserve IPv6 address protocol 16 for this hook's leases. The tag is the
+# ownership state; it survives a client restart and excludes static and RA addresses.
+address_proto=16
+if [[ $1 == deconfig ]]; then
+    ip -6 addr flush dev "$interface" proto "$address_proto"
+    exit 0
+fi
+
+# BusyBox 1.37 exports IAADDR as ipv6 and its valid lifetime as lease.
+# It does not export the preferred lifetime; use the valid lifetime for both.
+[[ ${ipv6:-} =~ ^[0-9a-fA-F:]+$ && $ipv6 == *:* ]] || exit 1
+address="$ipv6/128"
+lifetime=forever
+if [[ -n ${lease:-} ]]; then
+    [[ $lease =~ ^(0|[1-9][0-9]{0,9})$ ]] && (( lease <= 4294967295 )) || exit 1
+    if (( lease == 0 )); then
+        ip -6 addr flush dev "$interface" to "$address" proto "$address_proto"
+        exit 0
+    fi
+    if (( lease != 4294967295 )); then
+        lifetime=$lease
+    fi
+fi
+
+owned=$(ip -6 -o addr show dev "$interface" to "$address" proto "$address_proto")
+if [[ -n $owned ]]; then
+    action=change
+else
+    ip -6 addr flush dev "$interface" proto "$address_proto"
+    # Unlike replace, add cannot take over a pre-existing static or SLAAC address.
+    action=add
+fi
+ip -6 addr "$action" "$address" dev "$interface" proto "$address_proto" valid_lft "$lifetime" preferred_lft "$lifetime"

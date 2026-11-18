@@ -16,4 +16,5 @@ done
 
 for iface in eth1 eth2; do
     ip -4 addr replace "$1" dev "$iface"
+    ip -6 addr replace "$2" dev "$iface"
 done

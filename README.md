@@ -13,11 +13,12 @@ docker build --target nat-server -t nat-server:latest .
 sudo containerlab deploy -t examples/nat-vrf.clab.yml
 docker exec clab-nat-vrf-client vrf_shell eth1 ping -c 1 192.0.2.1
 docker exec clab-nat-vrf-client vrf_shell eth2 ping -c 1 192.0.2.1
+docker exec clab-nat-vrf-client vrf_shell eth2 ping -6 -c 1 2001:db8::1
 docker exec -it clab-nat-vrf-client vrf_shell eth1
 ```
 
-The example assigns the same IPv4 addresses on two separate links. Each
-link uses its own routing table, so overlapping addresses work without
+The example uses static, overlapping IPv4 and IPv6 addresses on two separate
+links. Each link uses its own routing table, so overlapping addresses work without
 changing management on `eth0`. Run `vrf_shell eth2` inside a VRF shell
 to open a nested shell; `exit` returns to the previous context. Run
 `ip vrf identify` to check the current context.
@@ -33,12 +34,38 @@ tests, use `--privileged` on a trusted lab host only.
   If omitted, discover unconfigured `ethN` data interfaces at startup.
   `eth0` is never enrolled. `ethN` uses VRF `vrf_ethN` and table `N+10`.
 - `VRF_WAIT_SECONDS`: discovery window for late Containerlab links; default 10.
-- `VRF_DHCP`: defaults to `1`. A lease sets IPv4 addresses and gateway routes
-  on that VRF only; it does not replace container-wide DNS. Set `0` for static IPs.
+- `VRF_DHCP` and `VRF_DHCP6`: global defaults for DHCPv4 and DHCPv6,
+  respectively. Both default to `1` (enabled). Set `0` to disable a client.
+- `VRF_DHCP_ETH1` and `VRF_DHCP6_ETH1`: override the respective default for
+  `eth1`. Use the uppercase interface suffix for other data links, for example
+  `VRF_DHCP6_ETH2` for `eth2`.
 - `NAT_SERVICES`: `nat-server` starts `echo-server` (TCP 31415), `sleep-server`
   (TCP 27182), and `tcp_server` (TCP 12345) in `vrf_eth1`, when present. Set
   `NAT_SERVICES=0` to disable this. Start additional listeners with `vrf_shell`
   if needed. Run iperf servers explicitly in the desired VRF.
+
+### Configure DHCP per link
+
+Set the variables under the Containerlab node's `env:`. For example, run only
+DHCPv4 on `eth1`, only DHCPv6 on `eth2`, and neither on other links:
+
+```yaml
+env:
+  VRF_INTERFACES: "eth1 eth2"
+  VRF_DHCP: "0"
+  VRF_DHCP6: "0"
+  VRF_DHCP_ETH1: "1"
+  VRF_DHCP6_ETH2: "1"
+```
+
+Provide a DHCP server for each enabled protocol on the corresponding link.
+DHCPv4 installs its gateway in the VRF's routing table. DHCPv6 requests an
+address (IA_NA), not a delegated prefix, and requires Linux 5.18 or newer.
+IPv6 gateways come from Router Advertisements, not DHCPv6. Enabling DHCPv6
+allows Router Advertisements on that link without disabling SLAAC. Neither
+client changes container-wide DNS.
+When adapting the static example, remove its address-setting `exec` commands
+for nodes you want to configure via DHCP.
 
 ## TCP test tools
 
