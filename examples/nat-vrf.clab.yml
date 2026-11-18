@@ -7,21 +7,15 @@ topology:
     binds:
       - ./nat-vrf-static:/etc/nat-vrf-static:ro
     env:
-      VRF_INTERFACES: "eth1 eth2"
-      VRF_WAIT_SECONDS: "30"
       VRF_DHCP: "0"
       VRF_DHCP6: "0"
   nodes:
     client:
       image: nat-client:latest
-      env:
-        TYPE: client
       exec:
         - /bin/bash /etc/nat-vrf-static 192.0.2.2/24 2001:db8::2/64
     server:
       image: nat-server:latest
-      env:
-        TYPE: server
       exec:
         - /bin/bash /etc/nat-vrf-static 192.0.2.1/24 2001:db8::1/64
   links:

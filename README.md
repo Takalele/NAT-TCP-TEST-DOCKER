@@ -17,8 +17,9 @@ docker exec clab-nat-vrf-client vrf_shell eth2 ping -6 -c 1 2001:db8::1
 docker exec -it clab-nat-vrf-client vrf_shell eth1
 ```
 
-The example uses static, overlapping IPv4 and IPv6 addresses on two separate
-links. Each link uses its own routing table, so overlapping addresses work without
+The example discovers both data links automatically and disables DHCPv4 and
+DHCPv6 on both. It assigns the same static IPv4 and IPv6 subnets to each link.
+Each link uses its own routing table, so the addresses can overlap without
 changing management on `eth0`. Run `vrf_shell eth2` inside a VRF shell
 to open a nested shell; `exit` returns to the previous context. Run
 `ip vrf identify` to check the current context.
@@ -30,10 +31,14 @@ tests, use `--privileged` on a trusted lab host only.
 
 ## Node settings
 
-- `VRF_INTERFACES`: space-separated data interfaces, such as `eth1 eth2`.
-  If omitted, discover unconfigured `ethN` data interfaces at startup.
-  `eth0` is never enrolled. `ethN` uses VRF `vrf_ethN` and table `N+10`.
-- `VRF_WAIT_SECONDS`: discovery window for late Containerlab links; default 10.
+Omit `env:` to use the defaults: the node discovers unconfigured data interfaces
+(`eth1`, `eth2`, and so on) at startup and starts both DHCPv4 and DHCPv6 on each.
+It leaves `eth0` untouched. Each `ethN` uses VRF `vrf_ethN` and routing table
+`N+10`.
+
+- `VRF_INTERFACES`: optional space-separated allowlist, such as `eth1 eth2`.
+  Set it only to limit VRF setup to specific links instead of auto-discovery.
+- `VRF_WAIT_SECONDS`: startup window for late Containerlab links; default 10 seconds.
 - `VRF_DHCP` and `VRF_DHCP6`: global defaults for DHCPv4 and DHCPv6,
   respectively. Both default to `1` (enabled). Set `0` to disable a client.
 - `VRF_DHCP_ETH1` and `VRF_DHCP6_ETH1`: override the respective default for
@@ -44,28 +49,42 @@ tests, use `--privileged` on a trusted lab host only.
   `NAT_SERVICES=0` to disable this. Start additional listeners with `vrf_shell`
   if needed. Run iperf servers explicitly in the desired VRF.
 
-### Configure DHCP per link
-
-Set the variables under the Containerlab node's `env:`. For example, run only
-DHCPv4 on `eth1`, only DHCPv6 on `eth2`, and neither on other links:
-
-```yaml
-env:
-  VRF_INTERFACES: "eth1 eth2"
-  VRF_DHCP: "0"
-  VRF_DHCP6: "0"
-  VRF_DHCP_ETH1: "1"
-  VRF_DHCP6_ETH2: "1"
-```
-
 Provide a DHCP server for each enabled protocol on the corresponding link.
 DHCPv4 installs its gateway in the VRF's routing table. DHCPv6 requests an
 address (IA_NA), not a delegated prefix, and requires Linux 5.18 or newer.
 IPv6 gateways come from Router Advertisements, not DHCPv6. Enabling DHCPv6
 allows Router Advertisements on that link without disabling SLAAC. Neither
 client changes container-wide DNS.
-When adapting the static example, remove its address-setting `exec` commands
-for nodes you want to configure via DHCP.
+To adapt the static overlap example to use DHCP on both links, remove its
+`env:` overrides and the address-setting `exec:` commands.
+
+### Use static addresses on `eth2` only
+
+In a topology using the defaults, add this under the Containerlab node. Both
+DHCP clients stay enabled on `eth1`; only `eth2` uses static addresses.
+
+```yaml
+env:
+  VRF_DHCP_ETH2: "0"
+  VRF_DHCP6_ETH2: "0"
+exec:
+  - >-
+    /bin/bash -ec '
+    deadline=$(( SECONDS + 35 ));
+    until link=$(ip -o link show dev eth2 2>/dev/null) && [[ $link == *" master vrf_eth2 "* ]]; do
+      if (( SECONDS >= deadline )); then
+        echo "Timed out waiting for eth2 to join vrf_eth2" >&2;
+        exit 1;
+      fi;
+      sleep 0.2;
+    done;
+    ip -4 addr replace 192.0.2.2/24 dev eth2;
+    ip -6 addr replace 2001:db8::2/64 dev eth2'
+```
+
+Containerlab can run `exec:` before the entrypoint attaches the link. Wait
+for `eth2` to join `vrf_eth2` before assigning addresses, as the
+[`nat-vrf-static` helper](examples/nat-vrf-static) does for both links.
 
 ## TCP test tools
 
